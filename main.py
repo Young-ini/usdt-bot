@@ -1,106 +1,70 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-
+import json
+import time
+import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
 import os
-import datetime
-import time
 
-BYBIT_URL = "https://www.bybit.com/en/convert/usdt-to-rub/"
-
-# Авторизация в Google Sheets через переменную окружения
-def authenticate_google_sheets():
-    google_secret = os.getenv('GOOGLE_SECRET_JSON')
-    if not google_secret:
-        raise Exception("Ошибка: переменная окружения GOOGLE_SECRET_JSON не найдена!")
-
-    credentials_dict = json.loads(google_secret)
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.file",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
-    client = gspread.authorize(creds)
-    return client
-
-# Получение курса USDT-RUB с Bybit
-def get_usdt_rub_price(headless=True):
-    driver = None
+# ==== 1. Парсинг курса с сайта ====
+def get_usdt_rate():
     try:
-        chrome_options = Options()
-        if headless:
-            chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
-        )
-        chrome_options.set_capability("pageLoadStrategy", "eager")
+        options = uc.ChromeOptions()
+        options.headless = True
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
 
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver = uc.Chrome(options=options)
+        driver.get("https://www.google.com/search?q=usdt+rub")
 
-        driver.get(BYBIT_URL)
+        time.sleep(5)
+        rate_element = driver.find_element(By.CSS_SELECTOR, 'span.DFlfde.SwHCTb')
+        rate = float(rate_element.text.replace(',', '.'))
 
-        wait = WebDriverWait(driver, 20)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
-
-        price_element = wait.until(
-            EC.visibility_of_element_located((By.XPATH, '//div[@class="card-info-price green"]'))
-        )
-
-        price_text = price_element.text.strip()
-        price = price_text.replace("₽", "").replace(",", ".").strip()
-        return round(float(price), 2)
+        driver.quit()
+        return rate
 
     except Exception as e:
         print(f"Ошибка при парсинге курса: {e}")
         return None
 
-    finally:
-        if driver:
-            driver.quit()
-
-# Обновление Google Таблицы
-def update_google_sheet(price):
+# ==== 2. Обновление Google таблицы ====
+def update_google_sheet(rate):
     try:
-        client = authenticate_google_sheets()
+        json_str = os.getenv("GOOGLE_SECRET_JSON")
+        if not json_str:
+            raise Exception("Ошибка: переменная окружения GOOGLE_SECRET_JSON не найдена!")
 
-        sheet = client.open_by_key("19qZClNIdNVI_TMFC27HhxVVktWx9M-pezafwYRslkP8").worksheet("COURSE")
-        sheet.update_cell(2, 2, price)
-        current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-        sheet.update_cell(2, 3, current_time)
+        creds_dict = json.loads(json_str)
 
-        print(f"✅ Данные обновлены: Курс {price}, Время {current_time}")
-        return True
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+
+        client = gspread.authorize(creds)
+        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/ВАШ_ID/edit#gid=0").sheet1
+
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+        sheet.append_row([now, rate])
+
+        print("Обновление Google Таблицы: Успешно")
 
     except Exception as e:
         print(f"Ошибка при обновлении Google Таблицы: {e}")
-        return False
 
-# Основной блок запуска
-if __name__ == "__main__":
-    start_time = time.time()
-    price = get_usdt_rub_price()
+# ==== 3. Основной скрипт ====
+def main():
+    start = time.time()
+    rate = get_usdt_rate()
 
-    if price:
-        success = update_google_sheet(price)
-        elapsed = round(time.time() - start_time, 2)
-        print(f"***Данные обновлены***")
-        print(f"Курс: {price}")
-        print(f"Дата: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
-        print(f"Обновление Google Таблицы: {'Успешно' if success else 'Не удалось'}")
-        print(f"Время выполнения: {elapsed} секунд")
+    if rate:
+        update_google_sheet(rate)
+        print(f"***Данные обновлены***\nКурс: {rate}\nДата: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
     else:
         print("Курс не получен, таблица не обновлена.")
+
+    print(f"Время выполнения: {round(time.time() - start, 2)} секунд")
+
+if __name__ == "__main__":
+    main()
