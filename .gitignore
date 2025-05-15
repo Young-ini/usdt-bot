@@ -1,4 +1,17 @@
-client_secret.json
-.env
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+
+# Секреты
+.env
+*.json
+GOOGLE_SECRET_JSON
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
